@@ -16,3 +16,16 @@ por él. Este overlay cumple su contrato con **schemas** en vez de RLS:
 Validado: `tsc --noEmit` + prueba runtime del impl contra Supabase test
 (ver `scripts/multitenant/` del umbrella). `single-account.spec.ts` solo
 escanea `src/runners/`: este directorio no lo afecta.
+
+## Migraciones por schema (mecanismo Fase 2, probado 2026-10-01)
+
+- La tabla `migrations` de TypeORM se crea **por schema** (tracking
+  independiente por tenant) ✓.
+- PERO el raw SQL de las migraciones NO hereda el `schema` del DataSource:
+  va al `search_path` de la conexión (probado: cayó en `public`).
+- Mecanismo correcto: `extra: { options: '-c search_path=<schema>,public' }`
+  en el DataSource del tenant — aplica a **todo el pool**, cubre raw SQL y
+  migraciones (probado: `raw_probe` cayó en el schema). Funciona vía
+  Supavisor session-mode.
+- Las migraciones que usen query-builder/entidades ya respetan `schema`;
+  solo el raw SQL necesita este mecanismo (o calificar a mano).
