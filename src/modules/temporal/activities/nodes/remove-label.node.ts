@@ -2,6 +2,8 @@ import { BaseNode, NodeExecutionResult } from './base.node';
 import { getAppContext } from '../../../../shared/app-context.holder';
 
 export interface RemoveLabelNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   labelId: string;

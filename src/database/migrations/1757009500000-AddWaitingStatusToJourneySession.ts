@@ -9,14 +9,20 @@ export class AddWaitingStatusToJourneySession1757009500000
     try {
       // First, check if the enum type exists
       const enumExists = await queryRunner.query(`
-        SELECT 1 FROM pg_type WHERE typname = 'journey_sessions_status_enum';
+        SELECT 1 FROM pg_type WHERE typname = 'journey_sessions_status_enum'
+          AND typnamespace = (quote_ident(current_schema())::regnamespace);
       `);
 
       if (enumExists && enumExists.length > 0) {
         // Add 'waiting' to existing enum if it doesn't already exist
         const waitingExists = await queryRunner.query(`
           SELECT 1 FROM pg_enum 
-          WHERE enumtypid = (SELECT oid FROM pg_type WHERE typname = 'journey_sessions_status_enum') 
+          WHERE enumtypid = (
+            SELECT oid FROM pg_type
+            WHERE typname = 'journey_sessions_status_enum'
+              AND typnamespace = (quote_ident(current_schema())::regnamespace)
+            LIMIT 1
+          ) 
           AND enumlabel = 'waiting';
         `);
 
@@ -36,7 +42,8 @@ export class AddWaitingStatusToJourneySession1757009500000
       const columnExists = await queryRunner.query(`
         SELECT column_name 
         FROM information_schema.columns 
-        WHERE table_name='journey_sessions' AND column_name='waiting_for';
+        WHERE table_schema = current_schema()
+          AND table_name='journey_sessions' AND column_name='waiting_for';
       `);
 
       if (!columnExists || columnExists.length === 0) {
@@ -52,7 +59,8 @@ export class AddWaitingStatusToJourneySession1757009500000
       const variablesExists = await queryRunner.query(`
         SELECT column_name 
         FROM information_schema.columns 
-        WHERE table_name='journey_sessions' AND column_name='variables';
+        WHERE table_schema = current_schema()
+          AND table_name='journey_sessions' AND column_name='variables';
       `);
 
       if (!variablesExists || variablesExists.length === 0) {

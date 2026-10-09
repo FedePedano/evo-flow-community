@@ -158,6 +158,7 @@ export interface ActionNodeActivities {
     sessionId: string;
     nodeData: any;
     waitResult: 'success' | 'timeout' | 'cancelled';
+    tenantId?: string | null;
   }): Promise<string | undefined>;
   resolveWaitHandle(input: {
     nodeId: string;
@@ -165,6 +166,7 @@ export interface ActionNodeActivities {
     sessionId: string;
     nodeData: any;
     waitResult: 'success' | 'timeout' | 'cancelled';
+    tenantId?: string | null;
   }): Promise<string | undefined>;
 }
 
@@ -417,6 +419,7 @@ export const actionNodeActivities: ActionNodeActivities = {
         waitConfig: input.nodeData,
         expectedCompleteAt: waitTimes.expectedCompleteAt,
         fallbackAt: waitTimes.fallbackAt,
+        tenantId: input.tenantId ?? null,
       });
 
       // Return wait configuration for workflow to handle timing
@@ -615,36 +618,42 @@ async function updateSessionWaitingStatus(params: {
   waitConfig: any;
   expectedCompleteAt?: Date;
   fallbackAt?: Date;
+  // Multitenant A2: slug del tenant (viene del input del nodo).
+  tenantId?: string | null;
 }): Promise<void> {
   try {
-    // Direct TypeORM approach without NestJS context
-    const { AppDataSource } = await import('../../../database/ormconfig');
+    // Multitenant A2: todo acceso a BD dentro del contexto del tenant
+    // (sin tenantId => legacy global, comportamiento actual).
+    const { runActivityInTenantDbContext } = await import(
+      '../tenant-activity-context'
+    );
     const { JourneySession, JourneySessionStatus } = await import(
       '../../journeys/entities/journey-session.entity'
     );
 
-    if (!AppDataSource.isInitialized) {
-      await AppDataSource.initialize();
-    }
+    await runActivityInTenantDbContext(
+      params.tenantId ?? null,
+      async (manager) => {
+        const sessionRepository = manager.getRepository(JourneySession);
 
-    const sessionRepository = AppDataSource.getRepository(JourneySession);
-
-    // Update session with waiting status
-    await sessionRepository.update(
-      { id: params.sessionId },
-      {
-        status: JourneySessionStatus.WAITING,
-        currentNodeId: params.nodeId,
-        waitingFor: {
-          nodeId: params.nodeId,
-          waitType: params.waitType as 'time' | 'event' | 'condition' | 'time_or_condition',
+        // Update session with waiting status
+        await sessionRepository.update(
+          { id: params.sessionId },
+          {
+            status: JourneySessionStatus.WAITING,
+            currentNodeId: params.nodeId,
+            waitingFor: {
+              nodeId: params.nodeId,
+              waitType: params.waitType as 'time' | 'event' | 'condition' | 'time_or_condition',
           conditions: params.waitConfig,
           expectedCompleteAt: params.expectedCompleteAt,
           fallbackAt: params.fallbackAt,
         },
         updatedAt: new Date(),
-      },
-    );
+        },
+      );
+      }
+    ); // cierre update + async + runActivityInTenantDbContext
 
     // Also update cache if available
     try {
@@ -653,6 +662,7 @@ async function updateSessionWaitingStatus(params: {
       // Get the existing session from cache first to preserve all fields including workflowId
       const existingSession = await journeyExecutionActivities.getSessionFromCache(
         params.sessionId,
+        params.tenantId ?? null,
       );
       
       // Create the updated session object for cache update, preserving existing fields
@@ -672,7 +682,7 @@ async function updateSessionWaitingStatus(params: {
         updatedAt: new Date(),
         lastCached: new Date(),
       };
-      await journeyExecutionActivities.updateSessionInCache(updatedSession);
+      await journeyExecutionActivities.updateSessionInCache(updatedSession, params.tenantId ?? null);
     } catch (error) {
       // Cache update is optional, don't fail if it doesn't work
       console.warn('Failed to update session cache:', error);

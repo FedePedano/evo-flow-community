@@ -13,6 +13,18 @@ jest.mock(
   { virtual: true },
 );
 
+// Multitenant A2: the processor resolves its data source and active journeys
+// through this module. Stub it so the guard tests stay DB-free and the legacy
+// (single-account) path returns a journey to dispatch, as before the refactor.
+jest.mock('../../../multitenant/tenant-services', () => ({
+  isMultitenantSchemaEnabled: jest.fn(() => false),
+  servicesForTenant: jest.fn(async () => ({ sessionService: {} })),
+  activeJourneysForTenant: jest.fn(async () => [
+    { id: 'journey-1', name: 'J1' },
+  ]),
+  dataSourceFor: jest.fn(),
+}));
+
 // The constructor kicks off initializeSingletonCacheService as fire-and-forget.
 // Stubbing it keeps construction synchronous and I/O-free, so a test can install
 // its own cache mock without first waiting a tick for the real one to land.
@@ -462,6 +474,7 @@ describe('JourneyTriggerProcessor contact-less events', () => {
 
     expect((processor as any).logger.log).toHaveBeenCalledWith(
       expect.stringContaining('1000 events skipped so far'),
+      expect.anything(),
     );
   });
 
@@ -473,6 +486,7 @@ describe('JourneyTriggerProcessor contact-less events', () => {
 
     expect((processor as any).logger.log).toHaveBeenCalledWith(
       expect.stringContaining('1 events skipped so far'),
+      expect.anything(),
     );
   });
 

@@ -12,7 +12,9 @@ import {
   ParseUUIDPipe,
   BadRequestException,
   ConflictException,
+  UseInterceptors,
 } from '@nestjs/common';
+import { TenantInterceptor } from '../../../multitenant/tenant.interceptor';
 import { ClsService } from 'nestjs-cls';
 import {
   ApiTags,
@@ -33,6 +35,9 @@ import { paginatedResponse, successResponse } from '../../../common/utils/respon
 
 @ApiTags('Campaigns')
 @Controller('campaigns')
+// Multitenant A2 (opt-in por controller): sin slug => 404 unknown tenant.
+// Sin MULTITENANT_SCHEMA=1 el seam es no-op y el comportamiento no cambia.
+@UseInterceptors(TenantInterceptor)
 export class CampaignsController {
   constructor(
     private readonly campaignsService: CampaignsService,

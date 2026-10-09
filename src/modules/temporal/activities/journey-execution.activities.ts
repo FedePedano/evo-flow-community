@@ -36,6 +36,8 @@ export interface InitializeJourneySessionInput {
 }
 
 export interface LoadJourneyDataInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   journeyId: string;
 }
 
@@ -63,6 +65,8 @@ export interface JourneyData {
 }
 
 export interface FindEntryNodeInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   journeyData: JourneyData;
   triggerEvent?: {
     messageId: string;
@@ -74,6 +78,8 @@ export interface FindEntryNodeInput {
 }
 
 export interface UpdateJourneySessionInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   sessionId: string;
   updates: {
     currentNodeId?: string;
@@ -86,6 +92,8 @@ export interface UpdateJourneySessionInput {
 }
 
 export interface LogNodeExecutionInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   sessionId: string;
   nodeId: string;
   nodeType: string;
@@ -104,17 +112,61 @@ export interface JourneyExecutionActivities {
   ): Promise<{ id: string; type: string; data: any } | null>;
   updateJourneySession(input: UpdateJourneySessionInput): Promise<void>;
   logNodeExecution(input: LogNodeExecutionInput): Promise<void>;
-  getSessionFromCache(sessionId: string): Promise<any | null>;
-  updateSessionInCache(journeySession: any): Promise<void>;
+  getSessionFromCache(
+    sessionId: string,
+    tenantId?: string | null,
+  ): Promise<any | null>;
+  updateSessionInCache(
+    journeySession: any,
+    tenantId?: string | null,
+  ): Promise<void>;
 }
 
-// Cache services instances
-let journeySessionCacheService: JourneySessionCacheService;
-let journeyCacheService: JourneyCacheService;
+// Cache services instances, keyed by tenant schema (multitenant A2).
+// Con pool de DataSources por tenant, un singleton por schema es correcto y
+// longevo (los repos atan a su DataSource). Clave 'public' = legacy global.
+import { servicesForTenant } from '../../../multitenant/tenant-services';
+export { servicesForTenant };
 
-// Initialize cache services directly without DI container
-async function initializeCacheServices(): Promise<void> {
-  if (!journeySessionCacheService || !journeyCacheService) {
+const journeySessionCacheServices = new Map<string, JourneySessionCacheService>();
+const journeyCacheServices = new Map<string, JourneyCacheService>();
+
+function tenantKeyFor(
+  manager?: import('typeorm').EntityManager,
+): string {
+  const schema = (
+    manager?.connection.options as { schema?: string } | undefined
+  )?.schema;
+  return schema ?? 'public';
+}
+
+// Initialize cache services directly without DI container.
+// Con manager => singletons del tenant (repos del DataSource del tenant).
+// Sin manager => legacy global (comportamiento actual).
+async function initializeCacheServices(
+  manager?: import('typeorm').EntityManager,
+): Promise<void> {
+  const key = tenantKeyFor(manager);
+  if (journeySessionCacheServices.has(key) && journeyCacheServices.has(key)) {
+    return;
+  }
+  if (manager) {
+    const eventEmitter = new EventEmitter2();
+    journeySessionCacheServices.set(
+      key,
+      new JourneySessionCacheService(
+        manager.getRepository(JourneySession),
+        eventEmitter,
+      ),
+    );
+    journeyCacheServices.set(
+      key,
+      new JourneyCacheService(manager.getRepository(Journey), eventEmitter),
+    );
+    return;
+  }
+
+  if (!journeySessionCacheServices.has('public')) {
     // Import AppDataSource dynamically
     const { AppDataSource } = await import('../../../database/ormconfig');
 
@@ -131,14 +183,13 @@ async function initializeCacheServices(): Promise<void> {
     const journeyRepository = AppDataSource.getRepository(Journey);
 
     // Create cache service instances directly
-    journeySessionCacheService = new JourneySessionCacheService(
-      journeySessionRepository,
-      eventEmitter,
+    journeySessionCacheServices.set(
+      'public',
+      new JourneySessionCacheService(journeySessionRepository, eventEmitter),
     );
-
-    journeyCacheService = new JourneyCacheService(
-      journeyRepository,
-      eventEmitter,
+    journeyCacheServices.set(
+      'public',
+      new JourneyCacheService(journeyRepository, eventEmitter),
     );
   }
 }
@@ -157,7 +208,10 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
 
     try {
       // Initialize cache services
-      await initializeCacheServices();
+await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
+        await servicesForTenant(input.tenantId);
 
       // Check if session already exists in cache
       let journeySession = await journeySessionCacheService.get(
@@ -299,7 +353,10 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
 
     try {
       // Initialize cache services
-      await initializeCacheServices();
+await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
+        await servicesForTenant(input.tenantId);
 
       // Load journey from cache
       const journey = await journeyCacheService.get(input.journeyId);
@@ -399,7 +456,10 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
 
     try {
       // Initialize cache services
-      await initializeCacheServices();
+await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
+        await servicesForTenant(input.tenantId);
 
       // Find the session: shared Redis first, then database fallback (the
       // cache's get() falls through Redis -> DB). A session seeded externally
@@ -493,7 +553,10 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
 
     try {
       // Initialize cache services
-      await initializeCacheServices();
+await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
+        await servicesForTenant(input.tenantId);
 
       // Find the session from cache
       const journeySession = await journeySessionCacheService.get(input.sessionId);
@@ -554,9 +617,14 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
   },
 
   // 🚀 PERFORMANCE: Helper method to get session from Redis DIRECTLY (bypassing new instances)
-  async getSessionFromCache(sessionId: string): Promise<any | null> {
+  async getSessionFromCache(
+    sessionId: string,
+    tenantId?: string | null,
+  ): Promise<any | null> {
     try {
-      await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService } =
+        await servicesForTenant(tenantId);
 
       const result = await journeySessionCacheService.get(sessionId);
 
@@ -575,9 +643,14 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
   },
 
   // 🚀 PERFORMANCE: Helper method to update session cache using cache service
-  async updateSessionInCache(journeySession: any): Promise<void> {
+  async updateSessionInCache(
+    journeySession: any,
+    tenantId?: string | null,
+  ): Promise<void> {
     try {
-      await initializeCacheServices();
+      // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
+      const { sessionService: journeySessionCacheService } =
+        await servicesForTenant(tenantId);
 
       await journeySessionCacheService.set(journeySession);
     } catch (error) {

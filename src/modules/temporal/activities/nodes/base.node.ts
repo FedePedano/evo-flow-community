@@ -28,7 +28,23 @@ export abstract class BaseNode {
 
   abstract execute(input: any): Promise<NodeExecutionResult>;
 
-  protected async initializeDatabase() {
+  // Multitenant A2: con tenantId devuelve el DataSource del tenant (pool
+  // por schema); sin él, el global (legacy, comportamiento actual).
+  protected async initializeDatabase(tenantId?: string | null) {
+    if (tenantId) {
+      const { AppDataSource } = await import('../../../../database/ormconfig');
+      if (!AppDataSource.isInitialized) {
+        await AppDataSource.initialize();
+      }
+      const { tenantDataSource } = await import(
+        '../../../../multitenant/tenant-schema-context.impl'
+      );
+      const { resolveTenantSchema } = await import(
+        '../../../../multitenant/tenants.registry'
+      );
+      const schema = await resolveTenantSchema(AppDataSource, tenantId);
+      return tenantDataSource(AppDataSource, schema);
+    }
     const { AppDataSource } = await import('../../../../database/ormconfig');
 
     if (!AppDataSource.isInitialized) {
@@ -43,8 +59,10 @@ export abstract class BaseNode {
   // for a read-modify-write.
   protected async readSessionVariables(
     sessionId: string,
+    // Multitenant A2: slug del tenant. Null = legacy.
+    tenantId?: string | null,
   ): Promise<Record<string, any>> {
-    const dataSource = await this.initializeDatabase();
+    const dataSource = await this.initializeDatabase(tenantId ?? null);
     const { JourneySession } = await import(
       '../../../journeys/entities/journey-session.entity'
     );
@@ -223,11 +241,12 @@ export abstract class BaseNode {
       const { journeyExecutionActivities } = await import('../journey-execution.activities');
       let session = await journeyExecutionActivities.getSessionFromCache(
         input.sessionId,
+        input.tenantId ?? null,
       );
 
       // If not in cache, load from database
       if (!session) {
-        const dataSource = await this.initializeDatabase();
+        const dataSource = await this.initializeDatabase(input.tenantId ?? null);
         const { JourneySession } = await import(
           '../../../journeys/entities/journey-session.entity'
         );
@@ -251,7 +270,7 @@ export abstract class BaseNode {
       }
 
       // Load journey variables
-      const dataSource = await this.initializeDatabase();
+      const dataSource = await this.initializeDatabase(input.tenantId ?? null);
       const { Journey } = await import(
         '../../../journeys/entities/journey.entity'
       );

@@ -20,6 +20,14 @@ export const eventsReceivedSchema = z
     sourceIp: z.string().min(1),
     ingestionId: z.uuidv4(),
     correlationId: z.uuidv4(),
+    // Multitenant A2: slug del tenant que originó el evento (lo estampa el
+    // intake cuando viaja en el request — header x-tenant-slug o llamadas
+    // internas del CRM). Los webhooks de proveedores externos no lo traen
+    // (null = legacy global; la atribución por canal es follow-up).
+    tenantId: z
+      .string()
+      .regex(/^[a-z0-9_]+$/)
+      .nullish(),
   })
   .strict();
 

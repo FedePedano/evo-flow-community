@@ -28,6 +28,9 @@ interface ContactEventRow {
   processing_time: string;
   message_raw: string;
   contact_or_anonymous_id: string;
+  // Multitenant A2: slug del tenant (columna tenant_id, DEFAULT 'default').
+  // Sin tenant atribuido viaja 'default' (= legacy global).
+  tenant_id: string;
 }
 
 interface BufferedEvent {
@@ -218,6 +221,9 @@ export class ClickHouseWriterService implements OnModuleDestroy {
           ? event.rawPayload
           : JSON.stringify(event.rawPayload ?? null),
       contact_or_anonymous_id: event.ingestionId,
+      // Multitenant A2: el intake estampa tenantId (header x-tenant-slug);
+      // provider webhooks viajan 'default' hasta la atribución por canal.
+      tenant_id: event.tenantId ?? 'default',
     };
   }
 

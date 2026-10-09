@@ -2,6 +2,8 @@ import { BaseNode, NodeExecutionResult } from '../../base.node';
 import { CrmClientService } from '../../../../../../shared/crm-client/crm-client.service';
 
 export interface SendTranscriptNodeInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   conversationId: string;
   sessionId: string;

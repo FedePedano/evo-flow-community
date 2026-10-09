@@ -3,6 +3,8 @@ import { getAppContext } from '../../../../shared/app-context.holder';
 import { CrmClientService } from '../../../../shared/crm-client/crm-client.service';
 
 export interface AddLabelNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   labelId: string;

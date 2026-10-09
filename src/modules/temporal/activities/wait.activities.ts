@@ -7,6 +7,8 @@ export interface RegisterWaitInput {
   contactId: string;
   waitType: 'time' | 'event' | 'condition' | 'time_or_condition';
   waitConfig: any;
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
 }
 
 export interface WaitRegistration {
@@ -27,6 +29,8 @@ export interface CompleteWaitInput {
   sessionId: string;
   nodeId: string;
   result: 'success' | 'timeout' | 'cancelled';
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
 }
 
 // Activities interface - defines the contract for all wait activities
@@ -36,53 +40,65 @@ export interface WaitActivities {
   getActiveWait(sessionId: string): Promise<WaitRegistration | null>;
 }
 
-// Create wait registry service that uses Redis cache
-let waitRegistryServiceCache: any = null;
+// Create wait registry service that uses Redis cache.
+// Multitenant A2: un singleton por schema (los repos atan a su DataSource).
+// Sin tenant => clave 'public' (legacy, comportamiento actual).
+const waitRegistryServiceCaches = new Map<string, any>();
 
-async function createWaitRegistryService() {
-  if (waitRegistryServiceCache) {
-    return waitRegistryServiceCache;
-  }
-
-  try {
-    // Import required modules
-    const { AppDataSource } = await import('../../../database/ormconfig');
-    const { WaitRegistryService } = await import('../../journeys/services/wait-registry.service');
-    const { JourneySessionCacheService } = await import('../../cache/services/journey-session-cache.service');
-    const { JourneySession } = await import('../../journeys/entities/journey-session.entity');
-
-    if (!AppDataSource.isInitialized) {
-      await AppDataSource.initialize();
+async function createWaitRegistryService(tenantId?: string | null) {
+  const { runActivityInTenantDbContext } = await import(
+    '../tenant-activity-context'
+  );
+  return runActivityInTenantDbContext(tenantId ?? null, async (manager) => {
+    const schema =
+      (manager.connection.options as { schema?: string }).schema ?? 'public';
+    const hit = waitRegistryServiceCaches.get(schema);
+    if (hit) {
+      return hit;
     }
 
-    const sessionRepository = AppDataSource.getRepository(JourneySession);
-    
-    // Create a mock event emitter for the cache service
-    const mockEventEmitter = {
-      emit: () => {},
-      on: () => {},
-      off: () => {},
-      once: () => {},
-    };
-    
-    const sessionCacheService = new JourneySessionCacheService(
-      sessionRepository,
-      mockEventEmitter as any,
-    );
-    
-    waitRegistryServiceCache = new WaitRegistryService(
-      sessionRepository,
-      sessionCacheService,
-    );
+    try {
+      // Import required modules
+      const { WaitRegistryService } = await import(
+        '../../journeys/services/wait-registry.service'
+      );
+      const { JourneySessionCacheService } = await import(
+        '../../cache/services/journey-session-cache.service'
+      );
+      const { JourneySession } = await import(
+        '../../journeys/entities/journey-session.entity'
+      );
 
-    log.info('Wait registry service initialized with Redis cache');
-    return waitRegistryServiceCache;
-  } catch (error: any) {
-    log.error('Failed to create wait registry service', {
-      error: error.message,
-    });
-    throw error;
-  }
+      const sessionRepository = manager.getRepository(JourneySession);
+
+      // Create a mock event emitter for the cache service
+      const mockEventEmitter = {
+        emit: () => {},
+        on: () => {},
+        off: () => {},
+        once: () => {},
+      };
+
+      const sessionCacheService = new JourneySessionCacheService(
+        sessionRepository,
+        mockEventEmitter as any,
+      );
+
+      const svc = new WaitRegistryService(
+        sessionRepository,
+        sessionCacheService,
+      );
+      waitRegistryServiceCaches.set(schema, svc);
+
+      log.info('Wait registry service initialized with Redis cache');
+      return svc;
+    } catch (error: any) {
+      log.error('Failed to create wait registry service', {
+        error: error.message,
+      });
+      throw error;
+    }
+  });
 }
 
 // Implementation of activities - Using WaitRegistryService with Redis cache
@@ -95,7 +111,7 @@ export const waitActivities: WaitActivities = {
     });
 
     try {
-      const waitRegistryService = await createWaitRegistryService();
+      const waitRegistryService = await createWaitRegistryService(input.tenantId ?? null);
       
       const registration = await waitRegistryService.registerWait({
         sessionId: input.sessionId,
@@ -132,7 +148,7 @@ export const waitActivities: WaitActivities = {
     });
 
     try {
-      const waitRegistryService = await createWaitRegistryService();
+      const waitRegistryService = await createWaitRegistryService(input.tenantId ?? null);
       
       await waitRegistryService.completeWait(
         input.sessionId,
@@ -155,11 +171,16 @@ export const waitActivities: WaitActivities = {
     }
   },
 
-  async getActiveWait(sessionId: string): Promise<WaitRegistration | null> {
+  async getActiveWait(
+    sessionId: string,
+    tenantId?: string | null,
+  ): Promise<WaitRegistration | null> {
     log.info('Getting active wait', { sessionId });
 
     try {
-      const waitRegistryService = await createWaitRegistryService();
+      const waitRegistryService = await createWaitRegistryService(
+        tenantId ?? null,
+      );
       
       const activeWait = await waitRegistryService.getActiveWait(sessionId);
 

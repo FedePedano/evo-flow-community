@@ -952,6 +952,8 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       );
 
       // 1. Create Kafka table for journey triggers
+      // Multitenant A2: tenantId viaja en el mensaje para que el trigger
+      // lo propague al workflow y las activities (null en eventos legacy).
       await this.command({
         query: `
           CREATE TABLE IF NOT EXISTS ${databaseName}.journey_trigger_kafka_queue (
@@ -963,7 +965,8 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
             properties String,
             traits Nullable(String),
             context Nullable(String),
-            timestamp String
+            timestamp String,
+            tenantId Nullable(String)
           )
           ENGINE = Kafka('${kafkaBrokers}', '${kafkaTopic}', '${kafkaGroupId}', 'JSONEachRow')
           SETTINGS
@@ -991,7 +994,8 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
             properties,
             traits,
             message_raw as context,
-            toString(occurred_at) as timestamp
+            toString(occurred_at) as timestamp,
+            tenant_id as tenantId
           FROM ${databaseName}.contact_events
           -- NO WHERE clause - send ALL events to be analyzed by JourneyTriggerProcessor
         `,

@@ -27,6 +27,8 @@ export interface TemplateVariableMapping {
 }
 
 export interface SendMessageNodeInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   conversationId?: string; // Optional - will create new conversation if not provided
   sessionId: string;

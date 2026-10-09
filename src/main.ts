@@ -136,6 +136,15 @@ async function bootstrap() {
   // No-op when EVO_EXTENSIONS_BOOTSTRAP is unset (standalone OSS run).
   await loadExternalExtensions();
 
+  // Multitenant A2 (rama exp/multitenant-a2): registra el DbContext
+  // schema-per-tenant. Opt-in con MULTITENANT_SCHEMA=1; sin la variable el
+  // seam conserva el no-op community (single-account intacto).
+  if (process.env.MULTITENANT_SCHEMA === '1') {
+    const { registerSchemaPerTenantOverlay } = await import('./multitenant/register');
+    registerSchemaPerTenantOverlay();
+    logger.log('Multitenant A2 overlay registrado (schema-per-tenant)');
+  }
+
   // Determine which module to load based on RUN_MODE
   // Filter log levels - disable DEBUG and VERBOSE for cleaner output
   const logLevels: LogLevel[] = ['log', 'warn', 'error'];

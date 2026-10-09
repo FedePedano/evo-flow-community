@@ -2,28 +2,62 @@
  * Overlay multitenant A2 (schema-per-tenant) para el seam `tenant_db_context`
  * de evo-flow (rama exp/multitenant-a2).
  *
- * El seam ya existe y TODO el acceso a BD de los runners pasa por él
- * (`TenantDbContext.getRepository`, 31 call sites). Su contrato es:
- *   (dataSource, tenantId, work) => work(manager)
- * El diseño enterprise asumía RLS (`set_config tenant_id`); esta
- * implementación cumple el mismo contrato con `SET LOCAL search_path`
- * dentro de una transacción por request. Ventajas:
- *   - Funciona hasta en pooler transaction-mode (SET LOCAL vive en la txn).
- *   - Cero cambios en los 31 call sites ni en las entidades.
- *   - Fuera de `src/runners/`: el guard `single-account.spec.ts` sigue verde.
- *   - Opt-in: solo se registra con MULTITENANT_SCHEMA=1 (default = community).
+ * Estrategia v2 (staging 2026-10-02): **pool de DataSources por tenant** en
+ * lugar de `SET LOCAL` por request. Motivos:
+ * - Los singletons (`waitRegistryServiceCache`, cache services de
+ *   journey-execution) cachean repositorios: con SET-por-txn no hay repo
+ *   cacheable correcto; con DataSource por tenant, un singleton por tenant
+ *   (key = schema) es correcto y longevo.
+ * - Sin transacción forzada por request (overhead + el bug del commit/release
+ *   que fugaba SET en session-mode). Quien necesita txn usa
+ *   `manager.transaction` sobre el DataSource del tenant.
+ * - Sin `SET` por query: el `schema` del DataSource cubre entidades y el
+ *   `options: -c search_path=` cubre raw SQL (mecanismo probado 2026-10-01).
+ * - `public` DELIBERADAMENTE fuera del path: Postgres resuelve al primer
+ *   schema que tenga la tabla — con public, tabla ausente en tenant lee/escribe
+ *   silenciosamente en public. `extensions` aporta pgcrypto/uuid-ossp/pg_trgm.
+ *
+ * El resto del contrato no cambia: (dataSource, tenantId, work(manager)).
+ * Sin tenantId => TenantContextMissingError (fail-closed).
  */
-import type { DataSource, EntityManager, ObjectLiteral } from 'typeorm';
+import { DataSource } from 'typeorm';
+import type { EntityManager, ObjectLiteral } from 'typeorm';
 import { TenantContextMissingError } from './tenant.errors';
 import { resolveTenantSchema } from './tenants.registry';
 
 export type TenantWork<T> = (manager: EntityManager) => Promise<T> | T;
 
+const pools = new Map<string, DataSource>();
+const TENANT_POOL_MAX = 3;
+
 /**
- * Implementación del extension point `tenant_db_context` con schemas.
- * Compatible estructuralmente con `TenantDbContextImpl` del registry
- * (se registra con `EvoExtensionPoints.replace`, ver register.ts).
+ * DataSource por tenant (cacheado). Exportado para que los singletons de
+ * activities (cache services) se construyan por tenant sin pasar por el seam.
  */
+export async function tenantDataSource(
+  base: DataSource,
+  schema: string,
+): Promise<DataSource> {
+  const live = pools.get(schema);
+  if (live?.isInitialized) {
+    return live;
+  }
+  const baseExtra = (base.options as unknown as { extra?: Record<string, unknown> }).extra ?? {};
+  const ds = new DataSource({
+    ...base.options,
+    name: `tenant_${schema}`,
+    schema,
+    extra: {
+      ...baseExtra,
+      max: TENANT_POOL_MAX,
+      options: `-c search_path=${schema},extensions`,
+    },
+  } as ConstructorParameters<typeof DataSource>[0]);
+  await ds.initialize();
+  pools.set(schema, ds);
+  return ds;
+}
+
 export async function schemaPerTenantDbContext<T>(
   dataSource: DataSource,
   tenantId: string | null,
@@ -33,35 +67,12 @@ export async function schemaPerTenantDbContext<T>(
     throw new TenantContextMissingError();
   }
   const schema = await resolveTenantSchema(dataSource, tenantId);
-
-  const runner = dataSource.createQueryRunner();
-  await runner.connect();
-  await runner.startTransaction();
-  try {
-    // SET LOCAL: muere con la transacción; jamás contamina el pool.
-    // `public` al final resuelve extensiones sin instalarlas por schema.
-    await runner.query(`SET LOCAL search_path TO ${schema}, public`);
-    const result = await work(runner.manager);
-    // Commit (no solo release): una txn abierta al liberar devolvería la
-    // conexión al pool con el SET LOCAL vivo en session-mode => fuga entre
-    // requests. El commit mata el SET LOCAL determinísticamente.
-    await runner.commitTransaction();
-    return result;
-  } catch (err) {
-    // Rollback tolerante: si la conexión murió, el release la descarta igual.
-    try {
-      await runner.rollbackTransaction();
-    } catch {
-      /* noop */
-    }
-    throw err;
-  } finally {
-    await runner.release(); // rollback implícito si no hubo commit
-  }
+  const tenantDs = await tenantDataSource(dataSource, schema);
+  return work(tenantDs.manager);
 }
 
 /** Helper para repositorios fuera del request (jobs): delega al manager dado. */
-export function scopedRepository<Entity extends ObjectLiteral>(
+export function scopedRepository<Entity extends object>(
   manager: EntityManager,
   target: new (...args: never[]) => Entity,
 ) {

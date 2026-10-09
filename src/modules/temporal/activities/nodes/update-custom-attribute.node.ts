@@ -3,6 +3,8 @@ import { getAppContext } from '../../../../shared/app-context.holder';
 import { mapContactDto } from '../../../../shared/crm-client/types/contact';
 
 export interface UpdateCustomAttributeNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   sessionId: string;

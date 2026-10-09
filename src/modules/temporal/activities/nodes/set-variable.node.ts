@@ -3,6 +3,8 @@ import { BaseNode, NodeExecutionResult } from './base.node';
 type ArithmeticOperation = 'increase' | 'decrease';
 
 export interface SetVariableNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   sessionId: string;
@@ -55,7 +57,7 @@ export class SetVariableNode extends BaseNode {
 
       // increase/decrease is a read-modify-write; a plain SET must not hit the DB.
       const sessionVariables = isArithmetic
-        ? await this.loadSessionVariables(input.sessionId)
+        ? await this.loadSessionVariables(input.sessionId, input.tenantId ?? null)
         : {};
 
       // Support both single variable and multiple variables
@@ -239,8 +241,9 @@ export class SetVariableNode extends BaseNode {
   // write a wrong value as success.
   private async loadSessionVariables(
     sessionId: string,
+    tenantId?: string | null,
   ): Promise<Record<string, any>> {
-    return await this.readSessionVariables(sessionId);
+    return await this.readSessionVariables(sessionId, tenantId ?? null);
   }
 
   private processVariableValue(value: any, context: Record<string, any>): any {

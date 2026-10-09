@@ -14,6 +14,11 @@ import { CustomLoggerService } from 'src/common/services/custom-logger.service';
 import { Client, Connection } from '@temporalio/client';
 import { JourneySessionCacheService } from '../../cache/services/journey-session-cache.service';
 import { JourneyExecutionPollerService } from '../../temporal/services/journey-execution-poller.service';
+import {
+  activeJourneysForTenant,
+  isMultitenantSchemaEnabled,
+  servicesForTenant,
+} from '../../../multitenant/tenant-services';
 import { TEMPORAL_TASK_QUEUES } from '../../temporal/temporal-task-queues.constants';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -41,6 +46,9 @@ export interface JourneyTriggerEvent {
   traits?: string;
   context?: string;
   timestamp: string;
+  // Multitenant A2: slug del tenant (viene del MV de ClickHouse, que lo lee
+  // de contact_events.tenant_id). Null = evento legacy no atribuido.
+  tenantId?: string | null;
 }
 
 @Injectable()
@@ -49,6 +57,8 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
     JourneyTriggerProcessor.name,
   );
   private skippedUndispatchableEvents = 0;
+  // Multitenant A2: eventos sin tenant atribuido (fail closed, no se despachan).
+  private skippedUnattributedEvents = 0;
   private consumer: Consumer | null = null;
   private kafka: Kafka | null = null;
   private readonly config = getProcessingConfig();
@@ -144,10 +154,18 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       // Best-effort: a warm-up failure falls back to the read-through in
       // JourneysService.findActive, so it must not block the consumer.
       try {
-        const warmed = await this.journeysService.warmActiveJourneysCache();
-        this.logger.log(
-          `🔥 Warmed active-journey cache with ${warmed} journeys before consuming (EVO-1927)`,
-        );
+        if (isMultitenantSchemaEnabled()) {
+          // Multitenant A2: el warm global cruzaría tenants. El cache se llena
+          // por tenant en el read-through de activeJourneysForTenant.
+          this.logger.log(
+            '⏭️  Skipping global active-journey warm (multitenant: per-tenant cache)',
+          );
+        } else {
+          const warmed = await this.journeysService.warmActiveJourneysCache();
+          this.logger.log(
+            `🔥 Warmed active-journey cache with ${warmed} journeys before consuming (EVO-1927)`,
+          );
+        }
       } catch (error) {
         this.logger.warn(
           `⚠️ Failed to warm active-journey cache at boot (read-through fallback will cover this): ${error.message}`,
@@ -165,7 +183,10 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     // The running total only prints every SKIPPED_EVENT_LOG_INTERVAL, so the
     // remainder would be lost on every restart without this flush.
-    if (this.skippedUndispatchableEvents > 0) {
+    if (
+      this.skippedUndispatchableEvents > 0 ||
+      this.skippedUnattributedEvents > 0
+    ) {
       this.logSkippedTotal();
     }
 
@@ -291,12 +312,25 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Multitenant A2: sin tenant resuelto no hay schema. Fail closed — leer
+      // journeys globales dispararía triggers cruzados entre clientes.
+      if (isMultitenantSchemaEnabled() && !event.tenantId) {
+        this.skippedUnattributedEvents += 1;
+        this.logger.warn(
+          `⏭️  Skipping event ${event.eventName} — sin tenant atribuido (multitenant)`,
+          { messageId: event.messageId, contactId: event.contactId },
+        );
+        return;
+      }
+      const tenantId = event.tenantId ?? null;
+      const { sessionService } = await servicesForTenant(tenantId);
+
       this.logger.log(
         `🔍 Analyzing event for journey triggers: ${event.eventName}`,
       );
 
       // 1. First, check if event satisfies any waiting sessions
-      await this.checkWaitingSessions(event);
+      await this.checkWaitingSessions(event, tenantId, sessionService);
 
       // 2. The active/waiting-session guard is applied per-journey at trigger
       // time (triggerJourneyExecution → checkForActiveOrWaitingSessions with the
@@ -305,7 +339,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       // concurrently; it still can't re-enter the same journey while active. EVO-1691.
 
       // 3. Buscar journeys ativas para o account
-      const activeJourneys = await this.journeysService.findActive();
+      const activeJourneys = await activeJourneysForTenant(tenantId);
 
       this.logger.log(
         `🎯 Found ${activeJourneys.length} active journeys `,
@@ -315,7 +349,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       let matchedJourneys = 0;
       for (const journey of activeJourneys) {
         if (await this.matchesJourneyTrigger(event, journey)) {
-          await this.triggerJourneyExecution(event, journey);
+          await this.triggerJourneyExecution(event, journey, sessionService);
           matchedJourneys++;
         }
       }
@@ -373,6 +407,9 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
   private logSkippedTotal(): void {
     this.logger.log(
       `⏭️  ${this.skippedUndispatchableEvents} events skipped so far — no contactId or no eventName`,
+      {
+        withoutTenantAttribution: this.skippedUnattributedEvents,
+      },
     );
   }
 
@@ -437,10 +474,11 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
   private async checkForActiveOrWaitingSessions(
     contactId: string,
     journeyId?: string,
+    sessionService?: JourneySessionCacheService,
   ): Promise<boolean> {
     try {
-      const contactSessions =
-        await this.sessionCacheService.getSessionsByContact(contactId);
+      const cache = sessionService ?? this.sessionCacheService;
+      const contactSessions = await cache.getSessionsByContact(contactId);
 
       // When journeyId is provided the guard is scoped to that journey only, so
       // a session in a different journey does not block this one (EVO-1691).
@@ -487,12 +525,13 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
    */
   private async checkWaitingSessions(
     event: JourneyTriggerEvent,
+    tenantId?: string | null,
+    sessionService?: JourneySessionCacheService,
   ): Promise<void> {
     try {
+      const cache = sessionService ?? this.sessionCacheService;
       // 🔍 Use the same method that works to get all sessions, then filter WAITING ones
-      const allSessions = await this.sessionCacheService.getSessionsByContact(
-        event.contactId,
-      );
+      const allSessions = await cache.getSessionsByContact(event.contactId);
       
       // Filter only WAITING sessions
       const waitingSessions = allSessions.filter(
@@ -627,20 +666,23 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
         this.logger.log('🔍 DEBUG: No cached workflowId, looking up in database', {
           sessionId,
         });
-        
-        const { AppDataSource } = await import('../../../database/ormconfig');
+
+        // Multitenant A2: lookup dentro del schema del tenant del evento
+        // (sin tenantId => legacy global, comportamiento actual).
+        const { runActivityInTenantDbContext } = await import(
+          '../../temporal/tenant-activity-context'
+        );
         const { JourneySession } = await import(
           '../entities/journey-session.entity'
         );
 
-        if (!AppDataSource.isInitialized) {
-          await AppDataSource.initialize();
-        }
-
-        const sessionRepository = AppDataSource.getRepository(JourneySession);
-        const session = await sessionRepository.findOne({
-          where: { id: sessionId },
-        });
+        const session = await runActivityInTenantDbContext(
+          event?.tenantId ?? null,
+          async (manager) =>
+            manager.getRepository(JourneySession).findOne({
+              where: { id: sessionId },
+            }),
+        );
         
         this.logger.log('🔍 DEBUG: Database session lookup result', {
           sessionId,
@@ -729,7 +771,10 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
   private async triggerJourneyExecution(
     event: JourneyTriggerEvent,
     journey: any,
+    sessionService?: JourneySessionCacheService,
   ): Promise<void> {
+    // Multitenant A2: cache de sesiones del tenant (repos atados a su schema).
+    const cache = sessionService ?? this.sessionCacheService;
     // Unlike the intake guard above, reaching here without a contact IS an
     // anomaly: every path into this method is supposed to have filtered already.
     if (!event.contactId?.trim()) {
@@ -754,6 +799,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       const hasExistingSession = await this.checkForActiveOrWaitingSessions(
         event.contactId,
         journey.id,
+        cache,
       );
       
       if (hasExistingSession) {
@@ -782,7 +828,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       // When messageId is absent we can't identify the event, so we skip the
       // dedup rather than block (degrades to today's behaviour, no false drops).
       if (event.messageId) {
-        const claimed = await this.sessionCacheService.tryClaimTriggerMessage(
+        const claimed = await cache.tryClaimTriggerMessage(
           journey.id,
           event.contactId,
           event.messageId,
@@ -828,10 +874,12 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
 
 
       // Prepare workflow arguments matching JourneyExecutionInput interface
+      // Multitenant A2: tenantId viaja al workflow y de ahí a las activities.
       const workflowArgs = {
         sessionId,
         journeyId: journey.id,
         contactId: event.contactId,
+        tenantId: event.tenantId ?? null,
         triggerEvent: {
           messageId: event.messageId,
           eventName: event.eventName,
@@ -876,7 +924,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
             ),
           );
 
-        await this.sessionCacheService.createFailedDispatchSession({
+        await cache.createFailedDispatchSession({
           sessionId,
           journeyId: journey.id,
           contactId: event.contactId,
@@ -907,7 +955,7 @@ export class JourneyTriggerProcessor implements OnModuleInit, OnModuleDestroy {
       }
 
       // Update session with workflow information
-      await this.sessionCacheService.updateSessionStatus(sessionId, 'active', {
+      await cache.updateSessionStatus(sessionId, 'active', {
         workflowId,
         workflowRunId: handle.firstExecutionRunId,
       });

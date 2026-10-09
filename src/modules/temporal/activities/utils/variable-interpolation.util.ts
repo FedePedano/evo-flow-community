@@ -130,43 +130,46 @@ export class VariableInterpolationUtil {
    * Updates session variables in the database
    */
   static async updateSessionVariables(
-    sessionId: string, 
+    sessionId: string,
     variables: Record<string, any>,
+    // Multitenant A2: slug del tenant (sin él => legacy global).
+    tenantId?: string | null,
   ): Promise<void> {
     try {
       // Try cache first
       const { journeyExecutionActivities } = await import('../journey-execution.activities');
-      let session = await journeyExecutionActivities.getSessionFromCache(sessionId);
+      let session = await journeyExecutionActivities.getSessionFromCache(sessionId, tenantId ?? null);
+
+      // Multitenant A2: acceso a BD dentro del contexto del tenant.
+      const { runActivityInTenantDbContext } = await import(
+        '../../tenant-activity-context'
+      );
+      const { JourneySession } = await import(
+        '../../../journeys/entities/journey-session.entity'
+      );
 
       // If not in cache, load from database
       if (!session) {
-        const { AppDataSource } = await import('../../../../database/ormconfig');
-        const { JourneySession } = await import(
-          '../../../journeys/entities/journey-session.entity'
+        session = await runActivityInTenantDbContext(
+          tenantId ?? null,
+          async (manager) =>
+            manager.getRepository(JourneySession).findOne({
+              where: { id: sessionId },
+            }),
         );
-
-        if (!AppDataSource.isInitialized) {
-          await AppDataSource.initialize();
-        }
-
-        const sessionRepository = AppDataSource.getRepository(JourneySession);
-        session = await sessionRepository.findOne({
-          where: { id: sessionId }
-        });
       }
 
       if (session) {
         session.variables = { ...session.variables, ...variables };
-        
+
         // Save to database
-        const { AppDataSource } = await import('../../../../database/ormconfig');
-        const { JourneySession } = await import(
-          '../../../journeys/entities/journey-session.entity'
+        await runActivityInTenantDbContext(
+          tenantId ?? null,
+          async (manager) =>
+            manager.getRepository(JourneySession).save(session),
         );
-        const sessionRepository = AppDataSource.getRepository(JourneySession);
-        await sessionRepository.save(session);
-        
-        await journeyExecutionActivities.updateSessionInCache(session);
+
+        await journeyExecutionActivities.updateSessionInCache(session, tenantId ?? null);
       }
     } catch (error) {
       console.error('Failed to update session variables:', error);

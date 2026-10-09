@@ -3,6 +3,8 @@ import { getAppContext } from '../../../../shared/app-context.holder';
 import { TEMPORAL_TASK_QUEUES } from '../../temporal-task-queues.constants';
 
 export interface TransferJourneyNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   sessionId: string;

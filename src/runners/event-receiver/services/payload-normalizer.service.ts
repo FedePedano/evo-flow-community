@@ -7,6 +7,19 @@ import {
 } from '../../../shared/broker/contracts';
 import { readCorrelationIdFromCls } from '../../../shared/correlation/correlation.util';
 
+/**
+ * Multitenant A2: lee el slug del tenant de los headers del intake.
+ * Formato estricto (mismo que TenantInterceptor); cualquier otro valor =>
+ * null (el evento viaja legacy, sin atribuir).
+ */
+function readTenantSlugFromHeaders(
+  headers: IncomingHttpHeaders,
+): string | null {
+  const raw = headers['x-tenant-slug'];
+  const slug = Array.isArray(raw) ? raw[0] : raw;
+  return typeof slug === 'string' && /^[a-z0-9_]+$/.test(slug) ? slug : null;
+}
+
 export interface NormalizerInput {
   platform: Platform;
   rawPayload: unknown;
@@ -50,6 +63,9 @@ export class PayloadNormalizerService {
       sourceIp: input.sourceIp,
       ingestionId: randomUUID(),
       correlationId: readCorrelationIdFromCls() ?? randomUUID(),
+      // Multitenant A2: el intake estampa el tenant cuando viaja en el
+      // request (llamadas internas/CRM). Proveedores externos no lo traen.
+      tenantId: readTenantSlugFromHeaders(input.headers),
     };
   }
 

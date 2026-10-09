@@ -2,6 +2,8 @@ import { BaseNode, NodeExecutionResult } from './base.node';
 import axios, { AxiosRequestConfig } from 'axios';
 
 export interface SendWebhookNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   sessionId: string;

@@ -9,6 +9,8 @@ interface CreateTaskResponseData {
 }
 
 export interface CreatePipelineTaskNodeInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   conversationId?: string;
   sessionId: string;

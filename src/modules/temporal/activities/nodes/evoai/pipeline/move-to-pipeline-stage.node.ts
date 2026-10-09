@@ -9,6 +9,8 @@ interface MoveResponseData {
 }
 
 export interface MoveToPipelineStageNodeInput {
+  // Multitenant A2: slug del tenant. Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   conversationId?: string;
   sessionId: string;

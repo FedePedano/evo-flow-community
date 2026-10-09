@@ -9,7 +9,9 @@ import {
   HttpCode,
   ParseUUIDPipe,
   Patch,
+  UseInterceptors,
 } from '@nestjs/common';
+import { TenantInterceptor } from '../../../multitenant/tenant.interceptor';
 import { ClsService } from 'nestjs-cls';
 import {
   ApiTags,
@@ -24,6 +26,8 @@ import { CampaignTemplate } from '../entities/campaign-template.entity';
 
 @ApiTags('Campaign Templates')
 @Controller('campaigns/:campaignId/templates')
+// Multitenant A2 (opt-in por controller): sin slug => 404 unknown tenant.
+@UseInterceptors(TenantInterceptor)
 export class CampaignTemplatesController {
   constructor(
     private readonly campaignTemplatesService: CampaignTemplatesService,

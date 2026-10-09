@@ -13,6 +13,8 @@ const CONTACT_FIELD_ALIASES: Record<string, string> = {
 };
 
 export interface ConditionalNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   conversationId?: string;
@@ -100,7 +102,7 @@ export class ConditionalNode extends BaseNode {
         : null;
 
       // Load session variables
-      const sessionVariables = await this.loadSessionVariables(input.sessionId);
+      const sessionVariables = await this.loadSessionVariables(input.sessionId, input.tenantId ?? null);
 
       // Track path evaluations for analytics
       const pathEvaluations: Array<{
@@ -682,11 +684,12 @@ export class ConditionalNode extends BaseNode {
    */
   private async loadSessionVariables(
     sessionId: string,
+    tenantId?: string | null,
   ): Promise<Record<string, any>> {
     try {
       // The read lives in BaseNode; the degrade-to-{} below is policy specific
       // to condition evaluation.
-      return await this.readSessionVariables(sessionId);
+      return await this.readSessionVariables(sessionId, tenantId ?? null);
     } catch (error: any) {
       // EVO-1913: surface the failure at ERROR level instead of swallowing it
       // as an empty bag silently (which made {{session var}} conditions all

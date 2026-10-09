@@ -17,13 +17,21 @@ Validado: `tsc --noEmit` + prueba runtime del impl contra Supabase test
 (ver `scripts/multitenant/` del umbrella). `single-account.spec.ts` solo
 escanea `src/runners/`: este directorio no lo afecta.
 
+## Estrategia v2: pool de DataSources por tenant (2026-10-02)
+
+Reemplaza al `SET LOCAL` por request: un DataSource por schema (cacheado,
+pool max 3) con `schema` + `options: -c search_path=<schema>,extensions`.
+Motivos: singletons cacheables por tenant, sin txn forzada, sin SET por
+query. `public` fuera del path (fallback silencioso = fuga).
+
 ## Migraciones por schema (mecanismo Fase 2, probado 2026-10-01)
 
 - La tabla `migrations` de TypeORM se crea **por schema** (tracking
   independiente por tenant) ✓.
 - PERO el raw SQL de las migraciones NO hereda el `schema` del DataSource:
   va al `search_path` de la conexión (probado: cayó en `public`).
-- Mecanismo correcto: `extra: { options: '-c search_path=<schema>,public' }`
+- Mecanismo correcto: `extra: { options: '-c search_path=<schema>,extensions' }`
+  (`public` fuera: fallback silencioso = fuga — staging 2026-10-02).
   en el DataSource del tenant — aplica a **todo el pool**, cubre raw SQL y
   migraciones (probado: `raw_probe` cayó en el schema). Funciona vía
   Supavisor session-mode.

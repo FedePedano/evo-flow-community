@@ -5,6 +5,8 @@ import { ScheduledActionStatus } from '../../../journeys/entities/scheduled-jour
 import { CrmClientService } from '../../../../shared/crm-client/crm-client.service';
 
 export interface ScheduledActionNodeInput {
+  // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
+  tenantId?: string | null;
   nodeId: string;
   contactId: string;
   sessionId: string;

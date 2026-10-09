@@ -21,6 +21,9 @@ export interface JourneyExecutionInput {
   sessionId: string;
   journeyId: string;
   contactId: string;
+  // Multitenant A2: slug del tenant (viene del trigger). Se propaga a cada
+  // activity que toca BD. Null = legacy single-tenant.
+  tenantId?: string | null;
   triggerEvent?: {
     messageId: string;
     eventName: string;
@@ -120,6 +123,7 @@ export async function JourneyExecutionWorkflow(
 
     existingSession = await activities.getSessionFromCache(
       input.sessionId,
+      input.tenantId ?? null,
     );
 
     log.info('🔍 DEBUG: Workflow cache lookup result', {
@@ -246,6 +250,7 @@ export async function JourneyExecutionWorkflow(
       );
 
       await activities.initializeJourneySession({
+        tenantId: input.tenantId ?? null,
         sessionId: input.sessionId,
         journeyId: input.journeyId,
         contactId: input.contactId,
@@ -274,6 +279,7 @@ export async function JourneyExecutionWorkflow(
 
         // Re-initialize to ensure session is complete with current workflow context
         await activities.initializeJourneySession({
+          tenantId: input.tenantId ?? null,
           sessionId: input.sessionId,
           journeyId: input.journeyId,
           contactId: input.contactId,
@@ -293,6 +299,7 @@ export async function JourneyExecutionWorkflow(
 
     // Load journey flow data
     const journey = await activities.loadJourneyData({
+      tenantId: input.tenantId ?? null,
       journeyId: input.journeyId,
     });
 
@@ -313,6 +320,7 @@ export async function JourneyExecutionWorkflow(
 
         // Update session with default variables
         await activities.updateJourneySession({
+          tenantId: input.tenantId ?? null,
           sessionId: input.sessionId,
           updates: {
             variables: state.variables,
@@ -334,6 +342,7 @@ export async function JourneyExecutionWorkflow(
 
     // Find entry point (trigger node)
     const entryNode = await activities.findEntryNode({
+      tenantId: input.tenantId ?? null,
       journeyData: journey,
       triggerEvent: input.triggerEvent,
     });
@@ -347,6 +356,7 @@ export async function JourneyExecutionWorkflow(
 
     // Update session with current node
     await activities.updateJourneySession({
+      tenantId: input.tenantId ?? null,
       sessionId: input.sessionId,
       updates: {
         currentNodeId: state.currentNodeId,
@@ -404,6 +414,7 @@ export async function JourneyExecutionWorkflow(
         // Log node started - run in parallel for speed
         await Promise.all([
           activities.logNodeExecution({
+            tenantId: input.tenantId ?? null,
             sessionId: input.sessionId,
             nodeId: currentNode.id,
             nodeType: currentNode.type,
@@ -422,6 +433,7 @@ export async function JourneyExecutionWorkflow(
           case 'wait':
           case 'wait-node': // Support both naming conventions
             nodeResult = await actionNodeActivities.executeWaitNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -604,6 +616,7 @@ export async function JourneyExecutionWorkflow(
               // returns undefined and we fall through to handle routing.
               const [resolvedNextNodeId, resolvedHandle] = await Promise.all([
                 actionNodeActivities.processWaitCompletion({
+                  tenantId: input.tenantId ?? null,
                   nodeId: currentNode.id,
                   contactId: input.contactId,
                   sessionId: input.sessionId,
@@ -611,6 +624,7 @@ export async function JourneyExecutionWorkflow(
                   waitResult: waitResult.result,
                 }),
                 actionNodeActivities.resolveWaitHandle({
+                  tenantId: input.tenantId ?? null,
                   nodeId: currentNode.id,
                   contactId: input.contactId,
                   sessionId: input.sessionId,
@@ -647,6 +661,7 @@ export async function JourneyExecutionWorkflow(
           case 'delayed-action-node':
           case 'scheduled-action-node':
             nodeResult = await actionNodeActivities.executeScheduledActionNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -691,6 +706,7 @@ export async function JourneyExecutionWorkflow(
           case 'addLabel':
           case 'add-label-node': // Support both naming conventions
             nodeResult = await actionNodeActivities.executeAddLabelNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               labelId: currentNode.data.labelId,
@@ -706,6 +722,7 @@ export async function JourneyExecutionWorkflow(
           case 'removeLabel':
           case 'remove-label-node': // Support both naming conventions
             nodeResult = await actionNodeActivities.executeRemoveLabelNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               labelId: currentNode.data.labelId,
@@ -719,6 +736,7 @@ export async function JourneyExecutionWorkflow(
           case 'updateContact':
           case 'update-contact-node':
             nodeResult = await actionNodeActivities.executeUpdateContactNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -730,6 +748,7 @@ export async function JourneyExecutionWorkflow(
           case 'update-custom-attribute-node':
             nodeResult =
               await actionNodeActivities.executeUpdateCustomAttributeNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 contactId: input.contactId,
                 sessionId: input.sessionId,
@@ -739,6 +758,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'split-node':
             nodeResult = await actionNodeActivities.executeSplitNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -748,6 +768,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'set-variable-node':
             nodeResult = await actionNodeActivities.executeSetVariableNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -757,6 +778,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'exit-journey-node':
             nodeResult = await actionNodeActivities.executeExitJourneyNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -769,6 +791,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'transfer-journey-node':
             nodeResult = await actionNodeActivities.executeTransferJourneyNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -782,6 +805,7 @@ export async function JourneyExecutionWorkflow(
           case 'journey-trigger-node': // Support both naming conventions
             // Use TriggerNode to process variable mappings
             nodeResult = await actionNodeActivities.executeTriggerNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -792,6 +816,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'send-webhook-node':
             nodeResult = await actionNodeActivities.executeSendWebhookNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               sessionId: input.sessionId,
@@ -805,6 +830,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'conditional-node':
             nodeResult = await actionNodeActivities.executeConditionalNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               contactId: input.contactId,
               conversationId:
@@ -826,6 +852,7 @@ export async function JourneyExecutionWorkflow(
               input.triggerEvent?.properties?.conversation_id;
 
             nodeResult = await actionNodeActivities.executeSendMessageNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId: conversationId || undefined,
               sessionId: input.sessionId,
@@ -846,6 +873,7 @@ export async function JourneyExecutionWorkflow(
           case 'send-canned-response-node':
             nodeResult =
               await actionNodeActivities.executeSendCannedResponseNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || undefined,
@@ -858,6 +886,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'send-email-team-node':
             nodeResult = await actionNodeActivities.executeSendEmailTeamNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id || undefined,
@@ -870,6 +899,7 @@ export async function JourneyExecutionWorkflow(
           case 'assign-to-pipeline-node':
             nodeResult =
               await actionNodeActivities.executeAssignToPipelineNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || undefined,
@@ -882,6 +912,7 @@ export async function JourneyExecutionWorkflow(
           case 'move-to-pipeline-stage-node':
             nodeResult =
               await actionNodeActivities.executeMoveToPipelineStageNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || undefined,
@@ -894,6 +925,7 @@ export async function JourneyExecutionWorkflow(
           case 'create-pipeline-task-node':
             nodeResult =
               await actionNodeActivities.executeCreatePipelineTaskNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || undefined,
@@ -905,6 +937,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'send-transcript-node':
             nodeResult = await actionNodeActivities.executeSendTranscriptNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id || '',
@@ -916,6 +949,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'assign-agent-node':
             nodeResult = await actionNodeActivities.executeAssignAgentNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id || '',
@@ -927,6 +961,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'assign-team-node':
             nodeResult = await actionNodeActivities.executeAssignTeamNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id || '',
@@ -938,6 +973,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'assign-bot-node':
             nodeResult = await actionNodeActivities.executeAssignBotNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id ||
@@ -963,6 +999,7 @@ export async function JourneyExecutionWorkflow(
           case 'resolve-conversation-node':
             nodeResult =
               await actionNodeActivities.executeResolveConversationNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || '',
@@ -980,6 +1017,7 @@ export async function JourneyExecutionWorkflow(
             // why the executor keeps the name `executeSnoozeConversationNode`.
             nodeResult =
               await actionNodeActivities.executeSnoozeConversationNode({
+                tenantId: input.tenantId ?? null,
                 nodeId: currentNode.id,
                 conversationId:
                   input.triggerEvent?.properties?.conversation_id || '',
@@ -990,6 +1028,7 @@ export async function JourneyExecutionWorkflow(
 
           case 'change-priority-node':
             nodeResult = await actionNodeActivities.executeChangePriorityNode({
+              tenantId: input.tenantId ?? null,
               nodeId: currentNode.id,
               conversationId:
                 input.triggerEvent?.properties?.conversation_id || '',
@@ -1044,6 +1083,7 @@ export async function JourneyExecutionWorkflow(
           // Run ALL completion operations in parallel - variables, logging, tracking
           const completionTasks = [
             activities.logNodeExecution({
+              tenantId: input.tenantId ?? null,
               sessionId: input.sessionId,
               nodeId: currentNode.id,
               nodeType: currentNode.type,
@@ -1064,6 +1104,7 @@ export async function JourneyExecutionWorkflow(
           if (nodeResult.variables) {
             completionTasks.push(
               activities.updateJourneySession({
+                tenantId: input.tenantId ?? null,
                 sessionId: input.sessionId,
                 updates: {
                   variables: state.variables,
@@ -1099,6 +1140,7 @@ export async function JourneyExecutionWorkflow(
           // Node execution failed - log failure
           if (currentNode) {
             await activities.logNodeExecution({
+              tenantId: input.tenantId ?? null,
               sessionId: input.sessionId,
               nodeId: currentNode.id,
               nodeType: currentNode.type,
@@ -1237,6 +1279,7 @@ export async function JourneyExecutionWorkflow(
                 handle: nodeResult.nextNodeHandle,
               }),
               activities.updateJourneySession({
+                tenantId: input.tenantId ?? null,
                 sessionId: input.sessionId,
                 updates: {
                   currentNodeId: state.currentNodeId,
@@ -1323,6 +1366,7 @@ export async function JourneyExecutionWorkflow(
     const totalExecutionTime = endTime - startTime;
 
     await activities.updateJourneySession({
+      tenantId: input.tenantId ?? null,
       sessionId: input.sessionId,
       updates: {
         status: 'completed',
@@ -1352,6 +1396,7 @@ export async function JourneyExecutionWorkflow(
     state.metadata.error = error.message;
 
     await activities.updateJourneySession({
+      tenantId: input.tenantId ?? null,
       sessionId: input.sessionId,
       updates: {
         status: 'failed',

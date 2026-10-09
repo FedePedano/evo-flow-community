@@ -72,6 +72,26 @@ const ALLOWED_TOKENS: SanctionedPattern[] = [
     pattern: /(?<![A-Za-z0-9_])[Tt]enantDbContextModule(?![A-Za-z0-9_])/g,
     reason: 'ADR14 seam NestJS module',
   },
+  {
+    // Multitenant A2 (FR44 extension): the intake stamps the slug the upstream
+    // already authorized onto the event envelope. A data field, not routing.
+    pattern: /(?<![A-Za-z0-9_])tenantId(?![A-Za-z0-9_])/g,
+    reason: 'A2 event-envelope tenant field',
+  },
+  {
+    pattern: /(?<![A-Za-z0-9_])tenant_id(?![A-Za-z0-9_])/g,
+    reason: 'A2 ClickHouse contact_events tenant column',
+  },
+  {
+    // The reader resolves the header to null when absent/malformed, so it can
+    // never mint routing from an untrusted value on its own.
+    pattern: /(?<![A-Za-z0-9_])readTenantSlugFromHeaders(?![A-Za-z0-9_])/g,
+    reason: 'A2 intake header reader',
+  },
+  {
+    pattern: /(?<![A-Za-z0-9_])x-tenant-slug(?![A-Za-z0-9_])/g,
+    reason: 'A2 intake header name',
+  },
 ];
 
 /**
@@ -83,7 +103,37 @@ const ALLOWED_TOKENS: SanctionedPattern[] = [
  *   { pattern: /^logger\.log\(\{ accountId: ingestion\.accountId \}\);$/,
  *     reason: 'EVO-XXXX log-only field, no flow impact' },
  */
-const ALLOWED_LINE_PATTERNS: SanctionedPattern[] = [];
+const ALLOWED_LINE_PATTERNS: SanctionedPattern[] = [
+  {
+    pattern:
+      /^\* Multitenant A2: lee el slug del tenant de los headers del intake\.$/,
+    reason: 'A2 intake header-reader doc comment',
+  },
+  {
+    pattern:
+      /^\* Formato estricto \(mismo que TenantInterceptor\); cualquier otro valor =>$/,
+    reason: 'A2 intake header-reader doc comment',
+  },
+  {
+    pattern:
+      /^\/\/ Multitenant A2: el intake estampa el tenant cuando viaja en el$/,
+    reason: 'A2 intake stamping comment',
+  },
+  {
+    pattern:
+      /^\/\/ Multitenant A2: slug del tenant \(columna tenant_id, DEFAULT 'default'\)\.$/,
+    reason: 'A2 ClickHouse tenant column comment',
+  },
+  {
+    pattern: /^\/\/ Sin tenant atribuido viaja 'default' \(= legacy global\)\.$/,
+    reason: 'A2 ClickHouse default attribution comment',
+  },
+  {
+    pattern:
+      /^\/\/ Multitenant A2: el intake estampa tenantId \(header x-tenant-slug\);$/,
+    reason: 'A2 intake stamping comment',
+  },
+];
 
 interface Violation {
   file: string;
