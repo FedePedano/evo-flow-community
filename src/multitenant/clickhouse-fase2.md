@@ -1,52 +1,52 @@
-# ClickHouse tenant_id — checklist Fase 2 (auditoría 2026-10-01)
+# ClickHouse tenant_id — checklist Fase 2 (re-auditoría 2026-10-09, post `d639ab5`)
 
-Migración base VALIDADA con clickhouse-local (`clickhouse-tenant-migration.sql`):
-`tenant_id LowCardinality(String) DEFAULT 'default'` + bloom index +
-MATERIALIZE, idempotente, legacy intacto. MV Kafka: recrear con passthrough
-(validado el SELECT contra tabla Memory).
+## Estado actual (hecho)
 
-## Escritura (llevar tenant hasta la fila)
+- Migración base VALIDADA (`clickhouse-tenant-migration.sql`):
+  `tenant_id LowCardinality(String) DEFAULT 'default'` + bloom index +
+  MATERIALIZE, idempotente, legacy intacto. MV Kafka: passthrough (validado).
+- **Escritura OK**: el contrato `events-received.contract.ts` ya lleva
+  `tenantId`; el intake resuelve el slug del header `X-Tenant-Slug`
+  (saneado `^[a-z0-9_]+$`, null → `'default'` legacy);
+  `clickhouse-writer.service.ts` escribe `tenant_id`.
+- ⚠️ **`createContactEventsTable()` (`clickhouse.service.ts:596-644`)** — el
+  CREATE runtime de la tabla **NO incluye `tenant_id`** (el DDL vive solo en el
+  SQL de migración). Alinear el runtime con el SQL antes de crear tablas nuevas.
 
-1. **Intake** (`runners/event-receiver/services/webhook-intake.service.ts`):
-   resolver tenant del path del webhook (`/webhooks/<slug>/...`) o del
-   inbox mapeado. Sin tenant resoluble => rechazar (fail-closed), no 'default'.
-2. **Contrato** (`shared/broker/contracts/events-received.contract.ts`):
-   agregar `tenantSlug: z.string()` al schema zod (`.strict()` lo exige
-   explícito; es backward-compatible porque el productor es el intake).
-   El tópico sigue siendo por plataforma (`events.received.<platform>`):
-   el tenant viaja DENTRO del mensaje, no hacen falta tópicos por tenant.
-3. **Enricher** (`runners/event-process/services/enricher.service.ts`):
-   pasar `tenantSlug` de envelope a `EnrichedEvent` (viene gratis por
-   intersección de tipos una vez que el contrato lo tiene).
-4. **Writer** (`runners/event-process/services/clickhouse-writer.service.ts`):
-   `ContactEventRow` += `tenant_id: string`; `toRow()` lo toma de
-   `event.tenantSlug`. DLQ/reproceso lo hereda (el evento ya lo trae).
-5. **Kafka path**: `contact_events_kafka_queue` += columna (migración §2);
-   recrear `contact_events_kafka_mv` con `tenant_id` en el SELECT (§3 del SQL).
+## Pendiente
 
-## Lectura (filtrar TODO lo que lea contact_events)
+- **Settings CH**: reemplazar `max_bytes_ratio_before_external_group_by` (no
+  existe en CH ≥23.x) por `max_bytes_before_external_group_by` (valor absoluto
+  en bytes, env-configurable) en:
+  - `modules/processing/clickhouse/clickhouse.service.ts:51` y `:102`
+  - `modules/processing/services/batch-database-optimizer.service.ts:211`
+  - Verificar la versión real de ClickHouse en prod (solo lectura) antes de
+    desplegar; no pinchar versión.
+- **Lectura**: filtrar TODO `FROM contact_events` con
+  `AND tenant_id = <slug>` (parámetro, nunca interpolado). Re-auditoría
+  2026-10-09 (`grep -rl "contact_events" src`, excluye specs/DTO/migración):
+  - modules/events/services/contact-events.service.ts
+  - modules/events/services/event-search.service.ts
+  - modules/click-tracking/services/click-tracking.service.ts
+  - modules/journeys/services/triggers/webhook.trigger.ts
+  - modules/journeys/services/journey-trigger-processor.service.ts
+  - modules/segments/queries/contact-event-names.ts
+  - modules/segments/services/segment-query-execution.service.ts
+  - modules/segments/services/modular-segment-computation.service.ts
+  - modules/segments/services/segment-clickhouse-query-builder.service.ts
+  - modules/processing/clickhouse/clickhouse.service.ts
+  - modules/processing/storage-processors/clickhouse.processor.ts
+  - modules/processing/storage-processors/optimized-clickhouse.processor.ts
+  - modules/processing/services/batch-processor.service.ts
+  - modules/processing/services/atomic-processor.service.ts
+  - modules/processing/services/single-contact-updater.service.ts
+  - runners/event-process/metrics/event-process-metrics.ts
 
-Patrón: `AND tenant_id = <slug>` (parámetro, nunca interpolado). Archivos
-con `FROM contact_events` (grep 2026-10-01, excluye specs):
-- modules/segments/services/segment-clickhouse-query-builder.service.ts
-- modules/segments/services/segment-query-execution.service.ts
-- modules/segments/services/modular-segment-computation.service.ts
-- modules/segments/queries/contact-event-names.ts
-- modules/events/services/contact-events.service.ts
-- modules/events/services/event-search.service.ts
-- modules/click-tracking/services/click-tracking.service.ts
-- modules/journeys/services/triggers/webhook.trigger.ts
-- modules/processing/services/atomic-processor.service.ts
-- modules/processing/services/batch-processor.service.ts
-- modules/processing/services/single-contact-updater.service.ts
-- modules/processing/storage-processors/clickhouse.processor.ts
-- modules/processing/storage-processors/optimized-clickhouse.processor.ts
-- runners/event-process/metrics/event-process-metrics.ts
+  El slug llega por interceptor HTTP (`TenantInterceptor`, `src/multitenant/`)
+  o por payload Temporal. Sin tenant => 404/error, nunca query sin filtro
+  (fail-closed; `'default'` existe solo para compat de escritura legacy).
 
-El slug llega por interceptor HTTP (`TenantInterceptor`, ya existe en
-`src/multitenant/`) o por payload en Temporal. Sin tenant => 404/error,
-nunca query sin filtro (fail-closed; el DEFAULT 'default' existe solo
-para compatibilidad de escritura legacy).
+## Verificación
 
-Verificación: spec que grepea `FROM contact_events` sin `tenant_id`
-en el mismo query (análogo a `single-account.spec.ts`).
+Spec que grepee `FROM contact_events` sin `tenant_id` en el mismo query
+(análogo a `single-account.spec.ts`).
