@@ -5,7 +5,10 @@ import { AudienceComputationService } from '../../../shared/audience/audience-co
 import { CampaignsService } from '../../campaigns/services/campaigns.service';
 import { Campaign } from '../../campaigns/entities/campaign.entity';
 import { CampaignExecution } from '../../campaigns/entities/campaign-execution.entity';
-import { CampaignContactStatus } from '../../campaigns/entities/campaign-contact.entity';
+import {
+  CampaignContact,
+  CampaignContactStatus,
+} from '../../campaigns/entities/campaign-contact.entity';
 import { runActivityInTenantDbContext } from '../tenant-activity-context';
 import {
   IMESSAGE_BROKER,
@@ -49,6 +52,13 @@ export interface CreateCampaignBatchesOutput {
 }
 
 export interface GetCampaignBatchInput {
+  /**
+   * Tenant the campaign belongs to (ADR14, story 10.1b). Propagated from the
+   * workflow payload so the activity's DB read is tenant-scoped. Optional for
+   * single-tenant (resolves to DEFAULT_TENANT_ID); under multi-tenant a missing
+   * value makes the activity fail explicitly rather than read unscoped.
+   */
+  tenantId?: string | null;
   campaignId: string;
   batchNumber: number;
 }
@@ -63,6 +73,13 @@ export interface CampaignBatch {
 }
 
 export interface UpdateCampaignStatusInput {
+  /**
+   * Tenant the campaign belongs to (ADR14, story 10.1b). Propagated from the
+   * workflow payload so the activity's DB write is tenant-scoped. Optional for
+   * single-tenant (resolves to DEFAULT_TENANT_ID); under multi-tenant a missing
+   * value makes the activity fail explicitly rather than write unscoped.
+   */
+  tenantId?: string | null;
   campaignId: string;
   status: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   sentContacts?: number;
@@ -122,6 +139,7 @@ export interface CampaignExecutionActivities {
   markBatchAsProcessed(
     campaignId: string,
     batchNumber: number,
+    tenantId?: string | null,
   ): Promise<void>;
 }
 
@@ -222,23 +240,28 @@ export async function getCampaignBatch(
   });
 
   try {
-    const app = await getAppContext();
-    const dataSource = app.get('DataSource');
-
-    // Query campaigns_contacts for specific batch
-    const contacts = await dataSource
-      .getRepository('CampaignContact')
-      .createQueryBuilder('cc')
-      .select(['cc.id', 'cc.contactId'])
-      .where('cc.campaignId = :campaignId', { campaignId: input.campaignId })
-      
-      .andWhere('cc.batchSequence = :batchNumber', {
-        batchNumber: input.batchNumber,
-      })
-      .andWhere('cc.status = :status', {
-        status: CampaignContactStatus.PENDING,
-      })
-      .getMany();
+    // Scope the read to the workflow's tenant via the seam (ADR14). The handed
+    // EntityManager carries app.current_tenant_id (enterprise multi-tenant) or
+    // the global pool (community / single-tenant); a missing tenant under
+    // multi-tenant throws here instead of reading across tenants.
+    const contacts = await runActivityInTenantDbContext(
+      input.tenantId,
+      (manager) =>
+        manager
+          .getRepository(CampaignContact)
+          .createQueryBuilder('cc')
+          .select(['cc.id', 'cc.contactId'])
+          .where('cc.campaignId = :campaignId', {
+            campaignId: input.campaignId,
+          })
+          .andWhere('cc.batchSequence = :batchNumber', {
+            batchNumber: input.batchNumber,
+          })
+          .andWhere('cc.status = :status', {
+            status: CampaignContactStatus.PENDING,
+          })
+          .getMany(),
+    );
 
     log.debug('Campaign batch retrieved', {
       campaignId: input.campaignId,
@@ -276,13 +299,6 @@ export async function updateCampaignStatus(
   });
 
   try {
-    const app = await getAppContext();
-    const campaignsService = app.get(CampaignsService);
-    const dataSource = app.get('DataSource');
-
-    // Get campaign repository
-    const campaignRepo = dataSource.getRepository('Campaign');
-
     // Build update object
     const updates: any = {
       status: input.status,
@@ -296,12 +312,14 @@ export async function updateCampaignStatus(
       updates.sentPercentage = input.sentPercentage;
     }
 
-    // Update campaign
-    await campaignRepo.update(
-      {
-        id: input.campaignId,
-      },
-      updates,
+    // Scope the write to the workflow's tenant via the seam (ADR14).
+    await runActivityInTenantDbContext(input.tenantId, (manager) =>
+      manager.getRepository(Campaign).update(
+        {
+          id: input.campaignId,
+        },
+        updates,
+      ),
     );
 
     log.info('Campaign status updated successfully', {
@@ -352,6 +370,7 @@ export async function getCampaignData(
 export async function markBatchAsProcessed(
   campaignId: string,
   batchNumber: number,
+  tenantId?: string | null,
 ): Promise<void> {
   log.debug('Marking batch as processed', {
     campaignId,
@@ -359,21 +378,24 @@ export async function markBatchAsProcessed(
   });
 
   try {
-    const app = await getAppContext();
-    const dataSource = app.get('DataSource');
-
-    // Update campaigns_contacts status for this batch
-    await dataSource
-      .getRepository('CampaignContact')
-      .createQueryBuilder()
-      .update()
-      .set({
-        status: CampaignContactStatus.SENT,
-        sentAt: new Date(),
-      })
-      .where('campaignId = :campaignId', { campaignId })
-      .andWhere('batchSequence = :batchNumber', { batchNumber })
-      .execute();
+    // Reference wiring (ADR14, story 10.1b): scope the activity's DB write to the
+    // tenant via the seam. Uses the handed EntityManager so the UPDATE runs on
+    // the connection carrying app.current_tenant_id (enterprise), or the global
+    // pool (community / single-tenant). A missing tenant under multi-tenant
+    // throws here instead of writing across tenants.
+    await runActivityInTenantDbContext(tenantId, (manager) =>
+      manager
+        .getRepository(CampaignContact)
+        .createQueryBuilder()
+        .update()
+        .set({
+          status: CampaignContactStatus.SENT,
+          sentAt: new Date(),
+        })
+        .where('campaignId = :campaignId', { campaignId })
+        .andWhere('batchSequence = :batchNumber', { batchNumber })
+        .execute(),
+    );
 
     log.debug('Batch marked as processed', {
       campaignId,
