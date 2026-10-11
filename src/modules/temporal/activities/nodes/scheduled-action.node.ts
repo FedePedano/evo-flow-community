@@ -3,6 +3,7 @@ import { Repository } from 'typeorm';
 import type { ScheduledJourneyAction } from '../../../journeys/entities/scheduled-journey-action.entity';
 import { ScheduledActionStatus } from '../../../journeys/entities/scheduled-journey-action.entity';
 import { CrmClientService } from '../../../../shared/crm-client/crm-client.service';
+import { TenantContextMissingError } from '../../../../multitenant/tenant.errors';
 
 export interface ScheduledActionNodeInput {
   // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
@@ -52,14 +53,29 @@ export class ScheduledActionNode extends BaseNode {
         calculatedDelayMinutes: (scheduledFor.getTime() - now.getTime()) / 1000 / 60,
       });
 
-      // Initialize database
-      const dataSource = await this.initializeDatabase();
+      // Multitenant A2 (bypasses-fase2.md #3): thread the tenant into the
+      // DataSource resolution so the ScheduledJourneyAction write lands in the
+      // tenant's schema. Community/legacy without a tenant keeps the global pool;
+      // under MULTITENANT_SCHEMA=1 a missing tenant fails closed instead of
+      // writing into public.
+      const tenantId = input.tenantId ?? null;
+      if (!tenantId) {
+        const { isMultitenantSchemaEnabled } = await import(
+          '../../../../multitenant/tenant-services'
+        );
+        if (isMultitenantSchemaEnabled()) {
+          throw new TenantContextMissingError();
+        }
+      }
+
+      // Initialize database (tenant-aware when a tenant is present)
+      const dataSource = await this.initializeDatabase(tenantId);
       const { ScheduledJourneyAction } = await import(
         '../../../journeys/entities/scheduled-journey-action.entity'
       );
 
       const scheduledActionRepository: Repository<ScheduledJourneyAction> =
-        dataSource.getRepository('ScheduledJourneyAction');
+        dataSource.getRepository(ScheduledJourneyAction);
 
       // Create scheduled action record
       const scheduledAction = scheduledActionRepository.create({
