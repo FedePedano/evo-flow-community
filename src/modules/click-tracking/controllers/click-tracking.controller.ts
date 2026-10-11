@@ -9,6 +9,7 @@ import {
   Query,
   HttpStatus,
   HttpCode,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import {
@@ -25,6 +26,7 @@ import {
   UpdateShortLinkDto,
   BulkCreateLinksDto,
 } from '../dto';
+import { TenantInterceptor } from '../../../multitenant/tenant.interceptor';
 
 /**
  * Click Tracking Controller
@@ -32,6 +34,7 @@ import {
  */
 @ApiTags('Click Tracking')
 @Controller('click-tracking')
+@UseInterceptors(TenantInterceptor)
 export class ClickTrackingController {
   constructor(
     private readonly clickTrackingService: ClickTrackingService,

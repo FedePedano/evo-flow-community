@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -14,12 +15,14 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CustomLoggerService } from '../../../common/services/custom-logger.service';
+import { TenantInterceptor } from '../../../multitenant/tenant.interceptor';
 import { ContactEventsResponseDto } from '../dto/contact-event-response.dto';
 import { ListContactEventsQueryDto } from '../dto/list-contact-events-query.dto';
 import { ContactEventsService } from '../services/contact-events.service';
 
 @ApiTags('Contact Events')
 @Controller('contacts')
+@UseInterceptors(TenantInterceptor)
 export class ContactEventsController {
   private readonly logger = new CustomLoggerService(
     ContactEventsController.name,

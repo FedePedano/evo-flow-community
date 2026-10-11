@@ -5,6 +5,7 @@ import {
   HttpStatus,
   UsePipes,
   ValidationPipe,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { EventSearchService } from '../services/event-search.service';
@@ -13,9 +14,11 @@ import {
   EventSearchResponseDto,
 } from '../dto/search-events.dto';
 import { CustomLoggerService } from '../../../common/services/custom-logger.service';
+import { TenantInterceptor } from '../../../multitenant/tenant.interceptor';
 
 @ApiTags('Events Search')
 @Controller('events')
+@UseInterceptors(TenantInterceptor)
 export class EventSearchController {
   private readonly logger = new CustomLoggerService(EventSearchController.name);
 
