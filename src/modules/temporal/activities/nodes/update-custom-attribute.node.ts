@@ -1,6 +1,7 @@
 import { BaseNode, NodeExecutionResult } from './base.node';
 import { getAppContext } from '../../../../shared/app-context.holder';
 import { mapContactDto } from '../../../../shared/crm-client/types/contact';
+import { TenantContextMissingError } from '../../../../multitenant/tenant.errors';
 
 export interface UpdateCustomAttributeNodeInput {
   // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
@@ -27,6 +28,16 @@ export class UpdateCustomAttributeNode extends BaseNode {
 
   private async getServices() {
     const appContext = getAppContext();
+    const tenantId = (this as any)._tenantId ?? null;
+
+    if (!tenantId) {
+      const { isMultitenantSchemaEnabled } = await import(
+        '../../../../multitenant/tenant-services'
+      );
+      if (isMultitenantSchemaEnabled()) {
+        throw new TenantContextMissingError();
+      }
+    }
 
     if (!this.customAttributesService) {
       const { CustomAttributesService } = await import('../../../custom-attributes/custom-attributes.service');
@@ -40,13 +51,14 @@ export class UpdateCustomAttributeNode extends BaseNode {
 
     return {
       customAttributesService: this.customAttributesService,
-      contactsService: this.contactsService
+      contactsService: this.contactsService,
     };
   }
 
   async execute(
     input: UpdateCustomAttributeNodeInput,
   ): Promise<NodeExecutionResult> {
+    (this as any)._tenantId = input.tenantId ?? null;
     return await this.executeWithTiming(input.nodeId, input, async () => {
       // Get services using lazy initialization
       const { contactsService } = await this.getServices();

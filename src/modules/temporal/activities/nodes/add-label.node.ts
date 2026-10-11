@@ -1,6 +1,7 @@
 import { BaseNode, NodeExecutionResult } from './base.node';
 import { getAppContext } from '../../../../shared/app-context.holder';
 import { CrmClientService } from '../../../../shared/crm-client/crm-client.service';
+import { TenantContextMissingError } from '../../../../multitenant/tenant.errors';
 
 export interface AddLabelNodeInput {
   // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
@@ -31,6 +32,16 @@ export class AddLabelNode extends BaseNode {
 
   private async getServices() {
     const appContext = getAppContext();
+    const tenantId = (this as any)._tenantId ?? null;
+
+    if (!tenantId) {
+      const { isMultitenantSchemaEnabled } = await import(
+        '../../../../multitenant/tenant-services'
+      );
+      if (isMultitenantSchemaEnabled()) {
+        throw new TenantContextMissingError();
+      }
+    }
 
     if (!this.labelsService) {
       const { LabelsService } = await import('../../../labels/labels.service');
@@ -44,11 +55,12 @@ export class AddLabelNode extends BaseNode {
 
     return {
       labelsService: this.labelsService,
-      contactsService: this.contactsService
+      contactsService: this.contactsService,
     };
   }
 
   async execute(input: AddLabelNodeInput): Promise<NodeExecutionResult> {
+    (this as any)._tenantId = input.tenantId ?? null;
     return await this.executeWithTiming(input.nodeId, input, async () => {
       // Interpolate variables in node data
       const interpolatedNodeData = await this.interpolateNodeData(

@@ -1,5 +1,6 @@
 import { BaseNode, NodeExecutionResult } from './base.node';
 import { getAppContext } from '../../../../shared/app-context.holder';
+import { TenantContextMissingError } from '../../../../multitenant/tenant.errors';
 
 export interface RemoveLabelNodeInput {
   // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
@@ -26,6 +27,16 @@ export class RemoveLabelNode extends BaseNode {
 
   private async getServices() {
     const appContext = getAppContext();
+    const tenantId = (this as any)._tenantId ?? null;
+
+    if (!tenantId) {
+      const { isMultitenantSchemaEnabled } = await import(
+        '../../../../multitenant/tenant-services'
+      );
+      if (isMultitenantSchemaEnabled()) {
+        throw new TenantContextMissingError();
+      }
+    }
 
     if (!this.labelsService) {
       const { LabelsService } = await import('../../../labels/labels.service');
@@ -39,20 +50,12 @@ export class RemoveLabelNode extends BaseNode {
 
     return {
       labelsService: this.labelsService,
-      contactsService: this.contactsService
+      contactsService: this.contactsService,
     };
   }
 
   async execute(input: RemoveLabelNodeInput): Promise<NodeExecutionResult> {
-    this.logger.log('RemoveLabelNode execution started', {
-      nodeId: input.nodeId,
-      contactId: input.contactId,
-      labelId: input.labelId,
-      labelName: input.labelName,
-      nodeData: input.nodeData,
-      sessionId: input.sessionId,
-    });
-
+    (this as any)._tenantId = input.tenantId ?? null;
     return await this.executeWithTiming(input.nodeId, input, async () => {
       // Interpolate variables in node data
       const interpolatedNodeData = await this.interpolateNodeData(input, input.nodeData);

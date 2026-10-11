@@ -1,6 +1,7 @@
 import { BaseNode, NodeExecutionResult } from './base.node';
 import { getAppContext } from '../../../../shared/app-context.holder';
 import { TEMPORAL_TASK_QUEUES } from '../../temporal-task-queues.constants';
+import { TenantContextMissingError } from '../../../../multitenant/tenant.errors';
 
 export interface TransferJourneyNodeInput {
   // Multitenant A2: slug del tenant (propagado del workflow). Null = legacy.
@@ -26,6 +27,16 @@ export class TransferJourneyNode extends BaseNode {
 
   private async getServices() {
     const appContext = getAppContext();
+    const tenantId = (this as any)._tenantId ?? null;
+
+    if (!tenantId) {
+      const { isMultitenantSchemaEnabled } = await import(
+        '../../../../multitenant/tenant-services'
+      );
+      if (isMultitenantSchemaEnabled()) {
+        throw new TenantContextMissingError();
+      }
+    }
 
     if (!this.journeysService) {
       const { JourneysService } = await import('../../../journeys/journeys.service');
@@ -33,11 +44,12 @@ export class TransferJourneyNode extends BaseNode {
     }
 
     return {
-      journeysService: this.journeysService
+      journeysService: this.journeysService,
     };
   }
 
   async execute(input: TransferJourneyNodeInput): Promise<NodeExecutionResult> {
+    (this as any)._tenantId = input.tenantId ?? null;
     return await this.executeWithTiming(input.nodeId, input, async () => {
       if (!input.nodeData.targetJourneyId) {
         throw new Error('Target journey ID is required for transfer node');
