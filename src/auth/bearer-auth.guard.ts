@@ -15,23 +15,36 @@ interface AuthResult {
   user: any;
   accounts?: any[];
   token?: any;
+  tenants?: string[];
 }
+
+/**
+ * CLS key under which the authenticated token's tenant slugs (`string[]`) are
+ * published for the current request, so downstream services can read them
+ * without re-parsing the token. Mirrors the `role` key set by RolesGuard.
+ */
+export const TENANTS_CLS_KEY = 'tenants';
 
 /**
  * BearerAuthGuard validates tokens via evo-auth-service-community.
  *
  * Contract:
  *  - POST {EVO_AUTH_SERVICE_URL}/api/v1/auth/validate with `Authorization: Bearer {token}`
- *  - 200 -> { success, data: { user, token, accounts } } -> populate request.user
+ *  - 200 -> { success, data: { user, token, accounts, tenants } } -> populate
+ *    request.user / request.accounts / request.account / request.tenants
  *  - 401 -> invalid token (UnauthorizedException)
  *  - 422 -> expired token (UnauthorizedException, message="expired")
  *  - 5xx -> ServiceUnavailableException
+ *
+ * Fail-closed (0.4a, exp/multitenant-a2): a 200 whose payload does not carry a
+ * non-empty `tenants` array of slugs is treated as an authentication failure
+ * (UnauthorizedException). There is never a fallback to a "default" tenant.
  *
  * No local cache: every request validates fresh against evo-auth-service.
  * The auth-service has its own Rails.cache (TTL 5min) — single source of truth.
  *
  * Integration API key (`x-integration-api-key`) bypasses the HTTP call entirely
- * (service-to-service authentication).
+ * (service-to-service authentication) and carries no tenant scope (`[]`).
  *
  * Timeouts aligned with evo_auth_service.rb on CRM Rails: open=5s, read=10s (axios `timeout`
  * covers the full round-trip; we use 10s as the effective combined budget).
@@ -125,10 +138,20 @@ export class BearerAuthGuard implements CanActivate {
 
       if (response.status === 200) {
         const payload = response.data?.data ?? response.data;
+        // Fail-closed (0.4a): the contract requires `tenants: string[]` with
+        // at least one slug. A missing/empty/malformed list is an auth failure
+        // — never fall back to a "default" tenant.
+        const tenants = BearerAuthGuard.normalizeTenants(payload?.tenants);
+        if (!tenants) {
+          throw new UnauthorizedException(
+            'Authentication failed: token response has no tenants',
+          );
+        }
         const result: AuthResult = {
           user: payload?.user,
           accounts: payload?.accounts,
           token: payload?.token,
+          tenants,
         };
         this.populateRequest(request, result);
         return true;
@@ -180,6 +203,25 @@ export class BearerAuthGuard implements CanActivate {
     request.user = result.user;
     request.accounts = result.accounts;
     request.account = result.accounts?.[0];
+    request.tenants = result.tenants ?? [];
+    // Also publish to the request-scoped CLS so non-HTTP-arg consumers
+    // (services, interceptors) can read the authorized tenant slugs.
+    this.cls?.set(TENANTS_CLS_KEY, request.tenants);
+  }
+
+  /**
+   * Validates and copies the `tenants` field from the /validate payload.
+   * Returns the `string[]` only when it is a non-empty array of non-empty
+   * strings; otherwise `null` (caller fails closed).
+   */
+  private static normalizeTenants(value: unknown): string[] | null {
+    if (!Array.isArray(value) || value.length === 0) {
+      return null;
+    }
+    if (!value.every((slug) => typeof slug === 'string' && slug.length > 0)) {
+      return null;
+    }
+    return value as string[];
   }
 
   /**
@@ -209,6 +251,8 @@ export class BearerAuthGuard implements CanActivate {
     request.accounts = [];
     request.account = null;
     request.isIntegrationRequest = true;
+    request.tenants = [];
+    this.cls?.set(TENANTS_CLS_KEY, request.tenants);
 
     return true;
   }
