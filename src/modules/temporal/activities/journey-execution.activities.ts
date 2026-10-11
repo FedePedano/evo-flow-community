@@ -125,73 +125,38 @@ export interface JourneyExecutionActivities {
 // Cache services instances, keyed by tenant schema (multitenant A2).
 // Con pool de DataSources por tenant, un singleton por schema es correcto y
 // longevo (los repos atan a su DataSource). Clave 'public' = legacy global.
-import { servicesForTenant } from '../../../multitenant/tenant-services';
+import { dataSourceFor, servicesForTenant } from '../../../multitenant/tenant-services';
 export { servicesForTenant };
 
 const journeySessionCacheServices = new Map<string, JourneySessionCacheService>();
 const journeyCacheServices = new Map<string, JourneyCacheService>();
 
-function tenantKeyFor(
-  manager?: import('typeorm').EntityManager,
-): string {
-  const schema = (
-    manager?.connection.options as { schema?: string } | undefined
-  )?.schema;
-  return schema ?? 'public';
-}
-
 // Initialize cache services directly without DI container.
-// Con manager => singletons del tenant (repos del DataSource del tenant).
-// Sin manager => legacy global (comportamiento actual).
+// Multitenant A2: el DataSource es tenant-aware — `dataSourceFor(tenantId)`
+// resuelve el pool del schema del tenant y cae al global sin tenantId — así
+// los repos atan al pool correcto en vez del pool global (bypass Fase 2).
+// Clave del cache = schema resuelto ('public' = legacy).
 async function initializeCacheServices(
-  manager?: import('typeorm').EntityManager,
+  tenantId?: string | null,
 ): Promise<void> {
-  const key = tenantKeyFor(manager);
+  const dataSource = await dataSourceFor(tenantId);
+  const key = (dataSource.options as { schema?: string }).schema ?? 'public';
   if (journeySessionCacheServices.has(key) && journeyCacheServices.has(key)) {
     return;
   }
-  if (manager) {
-    const eventEmitter = new EventEmitter2();
-    journeySessionCacheServices.set(
-      key,
-      new JourneySessionCacheService(
-        manager.getRepository(JourneySession),
-        eventEmitter,
-      ),
-    );
-    journeyCacheServices.set(
-      key,
-      new JourneyCacheService(manager.getRepository(Journey), eventEmitter),
-    );
-    return;
-  }
 
-  if (!journeySessionCacheServices.has('public')) {
-    // Import AppDataSource dynamically
-    const { AppDataSource } = await import('../../../database/ormconfig');
-
-    if (!AppDataSource.isInitialized) {
-      await AppDataSource.initialize();
-    }
-
-    // Create event emitter
-    const eventEmitter = new EventEmitter2();
-
-    // Create repository instances
-    const journeySessionRepository =
-      AppDataSource.getRepository(JourneySession);
-    const journeyRepository = AppDataSource.getRepository(Journey);
-
-    // Create cache service instances directly
-    journeySessionCacheServices.set(
-      'public',
-      new JourneySessionCacheService(journeySessionRepository, eventEmitter),
-    );
-    journeyCacheServices.set(
-      'public',
-      new JourneyCacheService(journeyRepository, eventEmitter),
-    );
-  }
+  const eventEmitter = new EventEmitter2();
+  journeySessionCacheServices.set(
+    key,
+    new JourneySessionCacheService(
+      dataSource.getRepository(JourneySession),
+      eventEmitter,
+    ),
+  );
+  journeyCacheServices.set(
+    key,
+    new JourneyCacheService(dataSource.getRepository(Journey), eventEmitter),
+  );
 }
 
 // Implementation of activities - for now, basic structure without actual implementation
@@ -208,7 +173,7 @@ export const journeyExecutionActivities: JourneyExecutionActivities = {
 
     try {
       // Initialize cache services
-await initializeCacheServices();
+await initializeCacheServices(input.tenantId);
       // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
       const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
         await servicesForTenant(input.tenantId);
@@ -353,7 +318,7 @@ await initializeCacheServices();
 
     try {
       // Initialize cache services
-await initializeCacheServices();
+await initializeCacheServices(input.tenantId);
       // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
       const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
         await servicesForTenant(input.tenantId);
@@ -456,7 +421,7 @@ await initializeCacheServices();
 
     try {
       // Initialize cache services
-await initializeCacheServices();
+await initializeCacheServices(input.tenantId);
       // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
       const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
         await servicesForTenant(input.tenantId);
@@ -553,7 +518,7 @@ await initializeCacheServices();
 
     try {
       // Initialize cache services
-await initializeCacheServices();
+await initializeCacheServices(input.tenantId);
       // Multitenant A2: singletons del tenant (shadowing concurrency-safe).
       const { sessionService: journeySessionCacheService, journeyService: journeyCacheService } =
         await servicesForTenant(input.tenantId);
